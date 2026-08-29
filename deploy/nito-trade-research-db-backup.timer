@@ -1,0 +1,10 @@
+[Unit]
+Description=nito-trade-research daily DB backup
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+Unit=nito-trade-research-db-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: nito-trade-research:0.1.0
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - data-backups:/home/nito/data/backups
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  data-backups:

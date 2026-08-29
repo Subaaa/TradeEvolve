@@ -1,30 +1,42 @@
-# Environment
-.env
-.env.*
-!.env.example
-
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
 .venv/
 venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.cover
 
-# Node.js
-node_modules/
-.next/
-dist/
-build/
+# uv
+uv.lock
 
-# IDE / OS
-.vscode/
-.idea/
+# Env
+.env
+.env.dev
+.env.local
+.env.production
+secrets/
+
+# OS
 .DS_Store
 Thumbs.db
 
-# Logs & runtime data
+# IDE
+.vscode/
+.idea/
+
+# Test artifacts
+test/.artifacts/
 *.log
-logs/
-data/
+
+# Data caches (real only — fixtures are committed)
+data/candles/*.parquet
+data/holdout/*.parquet

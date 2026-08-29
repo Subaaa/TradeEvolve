@@ -1,0 +1,27 @@
+{
+  "version_tag": "ema_atr_xauusd_h1_v1",
+  "instrument": "XAU_USD",
+  "granularity": "H1",
+  "description": "EMA crossover with ATR-based stop and take-profit. Baseline strategy; not expected to be profitable. Frozen at v0.1.0.",
+  "params": {
+    "fast_ema_length": 20,
+    "slow_ema_length": 50,
+    "atr_length": 14,
+    "atr_percentile_window": 200,
+    "atr_percentile_max": 0.95,
+    "atr_sl_multiplier": 1.5,
+    "atr_tp_multiplier": 3.0,
+    "min_rr_ratio": 1.5,
+    "time_stop_hours": 72,
+    "time_stop_min_r": 0.5,
+    "weekend_policy": "flatten"
+  },
+  "mutable_by_llm": [
+    "fast_ema_length",
+    "slow_ema_length",
+    "atr_length",
+    "atr_sl_multiplier",
+    "atr_tp_multiplier",
+    "time_stop_hours"
+  ]
+}

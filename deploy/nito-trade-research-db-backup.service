@@ -1,0 +1,11 @@
+[Unit]
+Description=nito-trade-research DB backup run
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/nito-trade-research
+Environment="PYTHONPATH=/opt/nito-trade-research"
+EnvironmentFile=/opt/nito-trade-research/.env
+ExecStart=/opt/nito-trade-research/.venv/bin/python -m app.ops.backup_cli

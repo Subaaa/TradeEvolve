@@ -1,0 +1,27 @@
+-- grants.sql
+-- Two roles. The application connects as `service_role` (Supabase managed)
+-- for reads and non-journal writes. It connects as `journal_writer` for
+-- journal inserts. The journal_writer role has INSERT-only on the journal
+-- tables; UPDATE and DELETE are denied.
+
+-- journal_writer is created and managed by Supabase; we document the
+-- expected grants here. The migration runner must apply them with a
+-- privileged role.
+
+-- (Run as a privileged role, e.g. `postgres` on the Supabase DB.)
+--
+-- create role journal_writer with login password '<set by Supabase user>';
+--
+-- grant connect on database postgres to journal_writer;
+-- grant usage on schema public to journal_writer;
+--
+-- grant insert on table
+--   journal_entries,
+--   trades,
+--   risk_events,
+--   audit_log
+-- to journal_writer;
+--
+-- revoke update, delete, truncate on
+--   journal_entries, trades, risk_events, audit_log
+-- from journal_writer;
