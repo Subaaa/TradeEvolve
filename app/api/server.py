@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="nito-trade-research",
+        title="TradeEvolve",
         version="0.1.0",
         description="Read-only JSON API for the paper-trading research agent.",
     )

@@ -1,6 +1,6 @@
 # Architecture
 
-This document is the full architecture for the nito-trade-research
+This document is the full architecture for the TradeEvolve
 agent. It is the canonical reference for "why is it this way". The
 implementation plan in `plan.md` and the `AGENTS.md` operating manual
 are the in-flight references.

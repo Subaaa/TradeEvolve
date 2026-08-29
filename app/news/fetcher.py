@@ -53,7 +53,7 @@ def fetch_one(url: str, source: str, *, client: httpx.Client | None = None) -> l
     if client is None:
         client = httpx.Client(timeout=15.0, follow_redirects=True)
     try:
-        resp = client.get(url, headers={"User-Agent": "nito-trade-research/0.1"})
+        resp = client.get(url, headers={"User-Agent": "TradeEvolve/0.1"})
         resp.raise_for_status()
     except httpx.HTTPError as e:
         logger.warning("news fetch failed url=%s err=%s", url, e)

@@ -39,7 +39,7 @@ def configure_logging(level: str) -> None:
 def main() -> int:
     s = get_settings()
     configure_logging(s.app_log_level)
-    logger.info("nito-trade-research starting (env=%s)", s.app_env)
+    logger.info("TradeEvolve starting (env=%s)", s.app_env)
 
     sched = start_scheduler()
     api = create_app()

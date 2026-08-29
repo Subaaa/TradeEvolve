@@ -1,5 +1,5 @@
 [project]
-name = "nito-trade-research"
+name = "TradeEvolve"
 version = "0.1.0"
 description = "Self-improving paper-trading research agent for XAU/USD on OANDA v20 fxTrade Practice."
 readme = "README.md"
@@ -55,7 +55,7 @@ dev = [
 ]
 
 [project.scripts]
-nito-trade = "app.cli:main"
+tradeevolve = "app.cli:main"
 
 [build-system]
 requires = ["hatchling"]

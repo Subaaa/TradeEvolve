@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    image: nito-trade-research:0.1.0
+    image: tradeevolve:0.1.0
     restart: unless-stopped
     env_file:
       - ../../.env

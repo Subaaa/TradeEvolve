@@ -1,5 +1,5 @@
 -- 0001_init.sql
--- Core schema for the nito-trade-research agent.
+-- Core schema for the TradeEvolve agent.
 -- All tables are append-only; only `system_state` is updated in normal operation.
 -- RLS is enabled on all tables; the application uses two roles:
 --   * service role: full access for reads and non-journal writes.

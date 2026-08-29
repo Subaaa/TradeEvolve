@@ -1,0 +1,26 @@
+[Unit]
+Description=TradeEvolve paper-trading agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/opt/TradeEvolve
+Environment="PYTHONPATH=/opt/TradeEvolve"
+EnvironmentFile=/opt/TradeEvolve/.env
+ExecStart=/opt/TradeEvolve/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/TradeEvolve/data/backups
+
+[Install]
+WantedBy=multi-user.target

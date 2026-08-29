@@ -1,4 +1,4 @@
-project_id = "nito-trade-research"
+project_id = "TradeEvolve"
 
 [api]
 enabled = true

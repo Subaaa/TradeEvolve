@@ -74,7 +74,7 @@ def cmd_promote_dry_run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(prog="nito-trade")
+    p = argparse.ArgumentParser(prog="tradeevolve")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pb = sub.add_parser("backtest")

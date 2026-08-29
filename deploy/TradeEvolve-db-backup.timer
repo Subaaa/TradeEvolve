@@ -1,10 +1,10 @@
 [Unit]
-Description=nito-trade-research daily DB backup
+Description=TradeEvolve daily DB backup
 
 [Timer]
 OnCalendar=*-*-* 00:00:00
 Persistent=true
-Unit=nito-trade-research-db-backup.service
+Unit=TradeEvolve-db-backup.service
 
 [Install]
 WantedBy=timers.target
