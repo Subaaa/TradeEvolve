@@ -5,18 +5,21 @@ Subcommands:
 - journal     : tail the journal (stub)
 - replay      : run the full weekly loop on fixtures
 - promote-dry-run : print what would happen for an experiment
+- broker-ping : verify the Alpaca MCP subprocess connects to the paper account
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
+from app.config import get_settings
 from app.evolution.backtester import BacktestInput, run as run_backtest
+from app.orders.mcp_client import McpClientPool
 from app.strategy.configs import StrategyConfig
 
 
@@ -73,6 +76,26 @@ def cmd_promote_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _broker_ping() -> None:
+    settings = get_settings()
+    pool = McpClientPool()
+    try:
+        account = await pool.call_tool("get_account_summary", {})
+        print("account_summary:", json.dumps(account, indent=2, default=str))
+        candles = await pool.call_tool(
+            "get_candles",
+            {"instrument": settings.instrument, "granularity": settings.granularity, "count": 5},
+        )
+        print("last candles:", json.dumps(candles, indent=2, default=str))
+    finally:
+        await pool.close()
+
+
+def cmd_broker_ping(args: argparse.Namespace) -> int:
+    asyncio.run(_broker_ping())
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="tradeevolve")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -97,6 +120,9 @@ def main() -> int:
     pp = sub.add_parser("promote-dry-run")
     pp.add_argument("--experiment-id", type=int, required=True)
     pp.set_defaults(func=cmd_promote_dry_run)
+
+    pbp = sub.add_parser("broker-ping")
+    pbp.set_defaults(func=cmd_broker_ping)
 
     args = p.parse_args()
     return args.func(args)

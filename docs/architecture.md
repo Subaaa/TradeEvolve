@@ -8,7 +8,7 @@ are the in-flight references.
 ## Goals and non-goals
 
 The agent is a self-improving, **paper-trading** research tool for
-**XAU/USD** on **OANDA v20 fxTrade Practice**. The MVP is a single
+**XAU/USD** (traded as **PAXG/USD** on Alpaca paper trading). The MVP is a single
 asset, a single timeframe, one explainable baseline strategy, one
 champion + one challenger, paper trading only, no leverage, daily
 review, weekly evolution, one bounded mutation per week.
@@ -25,8 +25,8 @@ container). The process holds:
 
 - the **APScheduler** in-process cron (all jobs in `app/scheduler/jobs/`)
 - the **FastAPI** read-only JSON API on `127.0.0.1:8080`
-- the OANDA **MCP subprocess** driver (the subprocess holds the OANDA
-  token; the parent never sees it)
+- the Alpaca **MCP subprocess** driver (the subprocess holds the Alpaca
+  API key/secret; the parent never sees them)
 - the deterministic **StrategyRunner** and **RiskEngine**
 - the in-process **Backtester**
 - the append-only **Journal** writer
@@ -41,7 +41,7 @@ no vector database, no frontend, no microservices.
 ## The LLM is a researcher
 
 The `LlmClient` is constructed with only the `minimax_api_key`. It has
-no access to OANDA tokens, DB URLs, or any other secret. The LLM is
+no access to Alpaca credentials, DB URLs, or any other secret. The LLM is
 called in five places, each with a strict Pydantic input and output
 schema:
 
@@ -61,8 +61,8 @@ and `RiskEngine` are pure Python functions of their inputs.
 test (`test_pinned_invariant.py`) fails the build if any non-`pinned/`
 module imports a non-allow-listed symbol from `pinned/`. The
 `LIVE_TRADING_ENABLED` constant in `pinned/simulation_constants.py` is
-`False`; the OANDA MCP subprocess refuses to start in a live
-environment.
+`False`; the Alpaca MCP subprocess refuses to connect to anything but a
+paper-trading base URL.
 
 ## The four-phase promotion loop
 
@@ -90,16 +90,16 @@ See `plan.md` Section 22 for the full table. The key invariants:
   `system_event` and an alert.
 - The kill switch is a row in `system_state`; the live loop checks
   it every tick.
-- Duplicate orders are prevented by `clientExtensions.tag`; OANDA
-  rejects re-submission of the same tag.
+- Duplicate orders are prevented by `client_tag`, passed as Alpaca's
+  `client_order_id`; Alpaca rejects re-submission of the same id.
 
-## The OANDA MCP server
+## The Alpaca MCP server
 
-Lives in `services/oanda_mcp/`. Built on the official `mcp` Python
-SDK v2.x. Nine tools: six read-only, two write (gated by
-`OANDA_MCP_WRITE_ENABLED` and `LIVE_TRADING_ENABLED`), and one
-account summary. The subprocess holds the OANDA token; the parent
-process communicates over stdio.
+Lives in `services/alpaca_mcp/`. Built on the official `mcp` Python
+SDK v2.x. Seven tools: five read-only, two write (gated by
+`ALPACA_MCP_WRITE_ENABLED`, and by `AlpacaClient` refusing to connect to
+a non-paper base URL). The subprocess holds the Alpaca API key/secret;
+the parent process communicates over stdio.
 
 ## Why this is enough to be worth building
 

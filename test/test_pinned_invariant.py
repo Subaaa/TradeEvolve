@@ -5,7 +5,7 @@ the following ways:
 
 - `LIVE_TRADING_ENABLED` is True in `pinned/simulation_constants.py`.
 - A non-`pinned/` file imports a write-side of a `pinned/` module.
-- The OandaClient construction would accept a live environment when
+- The AlpacaClient construction would accept a non-paper base URL when
   `LIVE_TRADING_ENABLED` is False.
 """
 from __future__ import annotations
@@ -118,14 +118,14 @@ def test_no_app_module_references_holdout() -> None:
     )
 
 
-def test_oanda_mcp_subprocess_refuses_live_env() -> None:
-    """A subprocess invocation with OANDA_ENVIRONMENT=live must exit non-zero."""
-    if not (ROOT / "services" / "oanda_mcp" / "pyproject.toml").exists():
-        pytest.skip("oanda_mcp not scaffolded")
+def test_alpaca_mcp_subprocess_refuses_live_base_url() -> None:
+    """The Alpaca client must refuse to connect to anything but paper-api."""
+    if not (ROOT / "services" / "alpaca_mcp" / "pyproject.toml").exists():
+        pytest.skip("alpaca_mcp not scaffolded")
     # We don't actually launch the subprocess in CI; we just check the
-    # `main()` function's behavior by reading its source.
-    src = (ROOT / "services" / "oanda_mcp" / "src" / "oanda_mcp" / "server.py").read_text(
+    # `AlpacaClient.__init__` behavior by reading its source.
+    src = (ROOT / "services" / "alpaca_mcp" / "src" / "alpaca_mcp" / "alpaca_client.py").read_text(
         encoding="utf-8"
     )
-    assert 'cfg.environment == "live"' in src
-    assert "LIVE_TRADING_ENABLED" in src or "live trading is disabled" in src
+    assert '"paper-api" not in cfg.base_url' in src
+    assert "LIVE_TRADING_ENABLED" in src or "refusing to connect" in src

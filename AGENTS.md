@@ -5,7 +5,7 @@
 ## Hard invariants
 
 1. **The LLM never modifies `pinned/`.** Files in `pinned/` are imported by the rest of the app. Adding a new mutable field to a `pinned/` config requires a human PR.
-2. **`LIVE_TRADING_ENABLED = False` is a hard constant.** Live trading is a Phase 7+ change, gated on a separate sign-off process. The OANDA client factory in `services/oanda_mcp/oanda_client.py` must reject any construction that would result in a live client.
+2. **`LIVE_TRADING_ENABLED = False` is a hard constant.** Live trading is a Phase 7+ change, gated on a separate sign-off process. `AlpacaClient` in `services/alpaca_mcp/src/alpaca_mcp/alpaca_client.py` must reject any connection to a non-paper (live) base URL.
 3. **The journal is append-only at the DB level.** No `UPDATE` or `DELETE` on `journal_entries`, `trades`, `risk_events`, or `audit_log`. Two Postgres roles enforce this: the service role for non-journal writes; a `journal_writer` role for `INSERT`-only on the journal tables.
 4. **The RiskEngine is a pure function.** It takes a `Proposal` and returns a `Decision`. No network, no I/O, no LLM. If a change would add any of these, the change is wrong.
 5. **The LLM is never given the holdout dataset.** `data/holdout/` and `pinned/holdout/` are not imported by any non-evolution module. A lint rule and a build-time test enforce this.

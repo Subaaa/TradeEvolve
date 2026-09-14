@@ -4,9 +4,9 @@ Read once at process start. After that, code imports the typed `Settings`
 singleton via `get_settings()`.
 
 We split the configuration into two parts: the secrets the LLM may *not*
-see (DB URLs, OANDA token — although the OANDA token is only read by the
-MCP subprocess, never by the parent), and the operational settings that
-may be surfaced in admin endpoints.
+see (DB URLs, the Alpaca API secret — although it is only read by the
+MCP subprocess, never by the parent), and the operational settings
+that may be surfaced in admin endpoints.
 """
 from __future__ import annotations
 
@@ -48,13 +48,13 @@ class Settings(BaseSettings):
     supabase_db_url: str = "postgresql://dev:dev@localhost:5432/dev"
     supabase_journal_db_url: str = "postgresql://journal_writer:dev@localhost:5432/dev"
 
-    # --- OANDA (read by MCP subprocess only) ---
-    oanda_api_key_paper: str = "dev-placeholder"
-    oanda_account_id_paper: str = "0000000-0000-0000-0000-000000000000"
-    oanda_api_key_live: str = ""
-    oanda_account_id_live: str = ""
-    oanda_environment: str = "practice"          # 'practice' | 'live'
-    oanda_mcp_write_enabled: bool = True
+    # --- Alpaca (read by MCP subprocess only) ---
+    alpaca_api_key_id: str = ""
+    alpaca_api_secret_key: str = ""
+    alpaca_base_url: str = "https://paper-api.alpaca.markets"
+    alpaca_data_url: str = "https://data.alpaca.markets"
+    alpaca_symbol: str = "PAXG/USD"
+    alpaca_mcp_write_enabled: bool = True
 
     # --- App ---
     app_env: str = "dev"
@@ -76,8 +76,9 @@ class Settings(BaseSettings):
 
     @property
     def live_trading_enabled(self) -> bool:
-        # Always false in the MVP. The MCP server also enforces this independently.
-        return _LIVE_GUARD and self.oanda_environment == "live"
+        # Always false in the MVP. The Alpaca MCP subprocess also enforces
+        # this independently by refusing to connect to a non-paper base URL.
+        return _LIVE_GUARD
 
     @property
     def data_dir(self) -> Path:

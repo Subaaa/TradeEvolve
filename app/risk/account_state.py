@@ -1,9 +1,9 @@
 """Builds an AccountState snapshot for the RiskEngine.
 
-In the MVP the source of truth is the OANDA fxTrade Practice account;
-in Phase 7 this would also be a live account (gated by `LIVE_TRADING_ENABLED`).
+In the MVP the source of truth is the Alpaca paper account; in Phase 7
+this would also be a live account (gated by `LIVE_TRADING_ENABLED`).
 
-This module is intentionally small: it just queries the OANDA MCP
+This module is intentionally small: it just queries the Alpaca MCP
 client and shapes the response.
 """
 from __future__ import annotations

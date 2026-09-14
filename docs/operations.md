@@ -18,7 +18,7 @@ cp .env.example .env.dev
 uv run python -m app.main
 ```
 
-The agent binds to `127.0.0.1:8080`. The OANDA MCP subprocess is
+The agent binds to `127.0.0.1:8080`. The Alpaca MCP subprocess is
 started on demand (lazy) by the order gateway.
 
 ## CLI
@@ -118,8 +118,8 @@ rollback.
 ## Hardening checklist
 
 - `LIVE_TRADING_ENABLED` is `False` in `pinned/simulation_constants.py`.
-- The OANDA MCP subprocess runs in `practice` mode and refuses
-  `OANDA_ENVIRONMENT=live`.
+- The Alpaca MCP subprocess refuses to connect to anything but a
+  paper-trading base URL.
 - The FastAPI service binds to `127.0.0.1` only.
 - The `journal_writer` DB role has `INSERT`-only on the journal tables.
 - The systemd unit sets `NoNewPrivileges`, `PrivateTmp`,

@@ -1,7 +1,7 @@
 """Shadow paper-trading.
 
 The candidate runs against the live candle stream in parallel with the
-champion, but its orders are not sent to OANDA. The shadow's PnL is
+champion, but its orders are not sent to the broker. The shadow's PnL is
 computed from the same candles the live loop sees, and its metrics must
 beat the champion's live metrics over the same window.
 """

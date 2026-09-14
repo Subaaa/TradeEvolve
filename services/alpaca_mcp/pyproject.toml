@@ -1,11 +1,11 @@
 [project]
-name = "oanda-mcp"
+name = "alpaca-mcp"
 version = "0.1.0"
-description = "OANDA v20 MCP server for TradeEvolve."
+description = "Alpaca (paper trading) MCP server for TradeEvolve."
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "mcp>=1.0.0",
-    "oandapyV20>=0.7.2",
+    "httpx>=0.27.0",
     "pydantic>=2.7.0",
 ]
 
@@ -14,4 +14,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/oanda_mcp"]
+packages = ["src/alpaca_mcp"]

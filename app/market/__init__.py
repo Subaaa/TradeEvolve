@@ -1,1 +1,1 @@
-"""Market package: OANDA v20 client, candle pipeline, indicators, state builder."""
+"""Market package: Alpaca client, candle pipeline, indicators, state builder."""

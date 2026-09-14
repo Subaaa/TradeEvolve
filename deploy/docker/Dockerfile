@@ -8,10 +8,10 @@ WORKDIR /build
 
 # Copy both project pyproject files and resolve dependencies
 COPY pyproject.toml uv.lock* ./
-COPY services/oanda_mcp/pyproject.toml services/oanda_mcp/
+COPY services/alpaca_mcp/pyproject.toml services/alpaca_mcp/
 COPY app/ ./app/
 COPY pinned/ ./pinned/
-COPY services/oanda_mcp/src/ services/oanda_mcp/src/
+COPY services/alpaca_mcp/src/ services/alpaca_mcp/src/
 
 RUN uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
@@ -36,6 +36,8 @@ ENV PYTHONUNBUFFERED=1
 USER nito
 EXPOSE 8080
 
-# Default: run the agent. The OANDA MCP subprocess is started by the
-# agent process on demand (lazy).
+# Default: run the agent. The Alpaca MCP subprocess is started by the
+# agent process on demand (lazy). Pure HTTPS REST -- no native
+# dependency, so this image works unmodified (unlike a local-terminal
+# broker like MT5 would have needed).
 CMD ["python", "-m", "app.main"]

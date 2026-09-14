@@ -1,4 +1,4 @@
-"""Market data pipeline: reconcile the on-disk candle store with OANDA.
+"""Market data pipeline: reconcile the on-disk candle store with the broker.
 
 The pipeline is the only component that writes to the `candles` table.
 It is idempotent: re-running it on the same window produces no change.

@@ -3,12 +3,12 @@
 Boots:
 1. Logging
 2. APScheduler
-3. The OANDA MCP subprocess (lazy: only when an order needs to be sent)
+3. The Alpaca MCP subprocess (lazy: only when an order needs to be sent)
 4. FastAPI on 127.0.0.1:8080
 5. Signal handlers
 
 The MCP subprocess driver is intentionally a small async wrapper; the
-agent process never holds the OANDA token.
+agent process never holds the Alpaca credentials.
 """
 from __future__ import annotations
 

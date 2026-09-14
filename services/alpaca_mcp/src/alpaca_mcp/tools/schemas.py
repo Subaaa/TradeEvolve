@@ -1,4 +1,4 @@
-"""Pydantic schemas for the OANDA MCP tool inputs/outputs."""
+"""Pydantic schemas for the Alpaca MCP tool inputs/outputs."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -61,39 +61,29 @@ class GetOpenPositionsOut(BaseModel):
     positions: list[dict]
 
 
-class GetOpenTradesIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class GetOpenTradesOut(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    trades: list[dict]
-
-
 class PlaceOrderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     instrument: str
-    units: int
-    type: Literal["MARKET", "LIMIT", "STOP"]
-    price: float | None = None
-    stopLossOnFill: dict | None = None
-    takeProfitOnFill: dict | None = None
-    timeInForce: Literal["GTC", "GTD", "FOK", "IOC"] = "GTC"
-    clientExtensions: dict | None = None
+    qty: float
+    side: Literal["buy", "sell"]
+    client_order_id: str = ""
 
 
 class PlaceOrderOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    orderFillTransaction: dict | None = None
-    orderCancelTransaction: dict | None = None
-    relatedTransactionIDs: list[str] = Field(default_factory=list)
+    order_id: str
+    client_order_id: str
+    status: str
+    filled_qty: float
+    filled_avg_price: float | None = None
 
 
 class CancelOrderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    orderId: str
+    order_id: str
 
 
 class CancelOrderOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    orderCancelTransaction: dict | None = None
+    order_id: str
+    status: str

@@ -1,6 +1,6 @@
 # TradeEvolve
 
-A self-improving, **paper-trading** research agent for **XAU/USD (gold spot vs US dollar)** on OANDA v20 fxTrade Practice. Python-only backend; **Supabase** for the data layer; **no frontend** in the MVP.
+A self-improving, **paper-trading** research agent for **XAU/USD (gold spot vs US dollar)**, traded via **PAXG/USD** (Pax Gold, 1:1 gold-backed) on Alpaca paper trading. Python-only backend; **Supabase** for the data layer; **no frontend** in the MVP.
 
 The LLM is a researcher and hypothesis generator only. Market math, risk, order validation, PnL, and promotion gates are deterministic code outside the LLM. The system is conservative by design: it must never weaken its own safety limits, switch to live trading, or alter the holdout dataset.
 
@@ -21,7 +21,7 @@ uv run supabase db push   # against the configured Supabase project
 uv run python -m app.main
 ```
 
-The agent process launches an OANDA MCP server as a stdio subprocess and starts an APScheduler-driven cron. The read-only JSON API is at `http://127.0.0.1:8080`.
+The agent process launches an Alpaca MCP server as a stdio subprocess and starts an APScheduler-driven cron. The read-only JSON API is at `http://127.0.0.1:8080`.
 
 ## Components
 
@@ -31,7 +31,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full layout.
 |-----------|------|
 | `app/main.py` | Entry point. Boots subprocess, scheduler, FastAPI, signals. |
 | `app/scheduler/` | APScheduler jobs. |
-| `app/market/` | OANDA v20 client, candle pipeline, indicators, state builder. |
+| `app/market/` | Alpaca client, candle pipeline, indicators, state builder. |
 | `app/strategy/` | StrategyRunner + StrategyConfig (Pydantic). |
 | `app/risk/` | RiskEngine (deterministic, LLM-unreachable). |
 | `app/orders/` | OrderGateway + client extensions. |
@@ -42,7 +42,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full layout.
 | `app/api/` | FastAPI read-only JSON API. |
 | `app/ops/` | Kill switch, backup, alerts. |
 | `app/db/` | DB client, migrations, grants. |
-| `services/oanda_mcp/` | Standalone OANDA MCP server (stdio). |
+| `services/alpaca_mcp/` | Standalone Alpaca MCP server (stdio). |
 | `pinned/` | Human-maintained, never LLM-written. |
 
 ## Tests
