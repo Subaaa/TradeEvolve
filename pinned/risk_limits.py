@@ -21,8 +21,13 @@ class RiskLimits:
 
     # --- Per-trade risk ---
     max_risk_per_trade_pct: float = 0.005          # 0.5% of equity
-    max_position_value_pct: float = 0.20           # 20% of equity in one position
-    max_units: int = 100                            # hard cap regardless of sizing
+    # Cap on the MARGIN a single position ties up, not its notional. With
+    # leverage 1.0 these are identical; above 1.0 the notional may exceed
+    # equity, which is the whole point of margin. Bounding margin (not
+    # notional) is what lets a small account take a correctly-sized
+    # risk-based position instead of being floored to zero.
+    max_margin_per_position_pct: float = 0.20      # 20% of equity as margin
+    max_units: float = 100.0                        # hard cap regardless of sizing
 
     # --- Loss limits ---
     max_daily_loss_pct: float = 0.03                # 3% of equity; new entries blocked

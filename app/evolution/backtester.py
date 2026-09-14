@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from app.risk.engine import evaluate
+from app.risk.sizing import floor_to_lot
 from app.risk.types import AccountState, MarketState, OrderType, Side
 from app.strategy.configs import StrategyConfig
 from app.strategy.runner import propose
@@ -36,7 +37,7 @@ class Trade:
     opened_at: datetime
     closed_at: datetime
     side: Side
-    units: int
+    units: float
     entry: float
     sl: float
     tp: float
@@ -91,8 +92,8 @@ class BacktestOutput:
 # ---------- The matching engine -------------------------------------------
 
 
-def _round_to_units(units: int) -> int:
-    return (units // SIM.position_round_units) * SIM.position_round_units
+def _round_to_units(units: float) -> float:
+    return floor_to_lot(units, SIM.min_lot_step)
 
 
 def _apply_slippage(price: float, side: Side, slippage_bps: float) -> float:
@@ -258,7 +259,7 @@ def run(
     equity_curve: list[float] = [bt.initial_equity]
     monthly_pnl: dict[tuple[int, int], float] = {}
     open_trade: Trade | None = None
-    open_units = 0
+    open_units = 0.0
     open_sl: float | None = None
     open_tp: float | None = None
     open_side: Side | None = None
@@ -358,7 +359,7 @@ def run(
                 ym = (bar_ts_dt.year, bar_ts_dt.month)
                 monthly_pnl[ym] = monthly_pnl.get(ym, 0.0) + pnl_usd
                 open_trade = None
-                open_units = 0
+                open_units = 0.0
                 open_sl = open_tp = None
                 open_side = None
                 open_entry = 0.0
@@ -389,7 +390,7 @@ def run(
                 if decision.decision == "approved" and decision.order is not None:
                     open_side = decision.order.side
                     open_units = _round_to_units(decision.order.units)
-                    if open_units <= 0:
+                    if open_units <= 0.0:
                         continue
                     open_entry = _apply_slippage(decision.order.entry_price, open_side, bt.slippage_bps)
                     open_sl = decision.order.stop_loss
@@ -444,7 +445,7 @@ def run(
     )
 
 
-def _compute_pnl(entry: float, exit_: float, units: int, side: Side) -> float:
+def _compute_pnl(entry: float, exit_: float, units: float, side: Side) -> float:
     if side == Side.LONG:
         return (exit_ - entry) * units
     return (entry - exit_) * units

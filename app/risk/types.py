@@ -67,7 +67,7 @@ class Proposal(BaseModel):
     instrument: str
     side: Side
     order_type: OrderType
-    units: int                                       # positive integer; sign of side is separate
+    units: float                                     # positive quantity; sign of side is separate
     entry_price: float
     stop_loss: float | None = None
     take_profit: float | None = None
@@ -79,7 +79,7 @@ class Proposal(BaseModel):
 
     @field_validator("units")
     @classmethod
-    def _units_positive(cls, v: int) -> int:
+    def _units_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("units must be > 0")
         return v
@@ -92,7 +92,7 @@ class OrderSpec(BaseModel):
     instrument: str
     side: Side
     order_type: OrderType
-    units: int
+    units: float
     entry_price: float
     stop_loss: float | None
     take_profit: float | None

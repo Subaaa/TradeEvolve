@@ -13,14 +13,26 @@ from typing import Final
 
 @dataclass(frozen=True)
 class SimulationConstants:
-    # OANDA fxTrade Practice has no commission; we keep this for live prep.
+    # The Alpaca paper account has no commission on crypto spot; we keep this for live prep.
     fee_bps: float = 0.0
     # H1 entries are mostly limit-style; 0.5bp is a conservative default.
     slippage_bps: float = 0.5
     # Conservative default for the bid/ask spread fallback when not provided.
     default_spread_bps: float = 2.0
-    # Position rounding
-    position_round_units: int = 1                # 1 unit of XAU
+    # --- Instrument / broker sizing model ---
+    # Ounces of gold per 1 unit of `units`. Alpaca's PAXG/USD is 1 token =
+    # 1 troy oz, so this is 1.0. An MT5-style broker quoting XAUUSD in lots
+    # of 100 oz would set this to 100.0 and size in lots instead.
+    contract_size: float = 1.0
+    # Smallest tradeable increment of `units`. Alpaca accepts fractional
+    # crypto quantities; 0.001 oz keeps sizing usable on small accounts.
+    # An MT5 broker with a 0.01-lot minimum would set this to 0.01.
+    min_lot_step: float = 0.001
+    # Account leverage. Alpaca does NOT offer leverage on crypto (PAXG is
+    # non-marginable), so 1.0 is the honest default for the current broker.
+    # Raise it only alongside a broker that actually grants margin; the
+    # margin cap in RISK_LIMITS is what bounds the resulting exposure.
+    leverage: float = 1.0
     # Session gaps
     flatten_before_daily_rollover_min: int = 30
     # Friday flatten time (UTC). Spot gold has Friday close ~21:00 UTC.

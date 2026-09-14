@@ -14,6 +14,7 @@ import pandas as pd
 
 from app.market.indicators.atr import atr, atr_percentile
 from app.market.indicators.ema import ema, ema_cross
+from app.risk.sizing import size_position
 from app.risk.types import OrderType, Proposal, Side
 
 from .configs import StrategyConfig
@@ -99,10 +100,10 @@ def propose(
     if rr < config.min_rr_ratio:
         return []
 
-    # Sizing: risk_per_trade = equity * 0.005; units = floor(risk / sl_distance)
-    risk_usd = equity * 0.005
-    units = int(risk_usd // sl_distance)
-    if units < 1:
+    # Sizing satisfies the risk cap, the margin cap and `max_units` at once;
+    # see `app.risk.sizing` for why margin rather than notional is the cap.
+    units = size_position(equity=equity, entry=entry, sl_distance=sl_distance)
+    if units <= 0.0:
         return []
 
     bar_ts = candles.index[-1]

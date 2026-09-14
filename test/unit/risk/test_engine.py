@@ -20,8 +20,10 @@ from app.risk.types import (
     ReasonCode,
     Side,
 )
+from app.risk.sizing import floor_to_lot, margin_required
 from pinned.news_policy import NewsPolicy
 from pinned.risk_limits import RISK_LIMITS, RiskLimits
+from pinned.simulation_constants import SIM
 
 
 # ---------- Helpers ---------------------------------------------------------
@@ -29,7 +31,7 @@ from pinned.risk_limits import RISK_LIMITS, RiskLimits
 
 def _base_proposal(
     *,
-    units: int = 1,
+    units: float = 1.0,
     entry: float = 2000.0,
     sl: float | None = 1990.0,
     tp: float | None = 2030.0,
@@ -98,14 +100,21 @@ def test_approve_clean_proposal() -> None:
 
 
 def test_reduce_size_factor_applied() -> None:
-    p = _base_proposal(units=1)
+    from pinned.news_policy import REDUCE_SIZE_FACTOR
+
+    p = _base_proposal(units=1.0)
     d = evaluate(p, _base_state(), RISK_LIMITS, NewsPolicy.REDUCE_SIZE, _base_market(), _now())
     assert d.decision == "approved"
     assert d.order is not None
-    # units=1 is the minimum, so reduction rounds to 1; verify the
-    # factor path was taken by checking the units survived the rounding
-    # (a normal approval would also produce 1).
-    assert d.order.units >= 1
+    assert d.order.units == floor_to_lot(1.0 * REDUCE_SIZE_FACTOR, SIM.min_lot_step)
+    assert d.order.units < p.units
+
+
+def test_reduce_size_below_one_lot_step_is_skipped() -> None:
+    p = _base_proposal(units=SIM.min_lot_step)
+    d = evaluate(p, _base_state(), RISK_LIMITS, NewsPolicy.REDUCE_SIZE, _base_market(), _now())
+    assert d.decision == "skipped"
+    assert d.order is None
 
 
 # ---------- Kill switch -----------------------------------------------------
@@ -183,8 +192,10 @@ def test_per_trade_risk_breach_rejects() -> None:
     assert ReasonCode.RISK_EXCEEDS_PER_TRADE in d.reason_codes
 
 
-def test_position_value_breach_rejects() -> None:
-    p = _base_proposal(units=200, entry=2000.0)  # value = 400k vs equity 10k
+def test_margin_breach_rejects() -> None:
+    # 200 oz @ 2000 = 400k notional; at leverage 1.0 that is 400k of margin
+    # against 10k equity, far over the 20% cap.
+    p = _base_proposal(units=200, entry=2000.0)
     d = evaluate(p, _base_state(), RISK_LIMITS, NewsPolicy.NORMAL, _base_market(), _now())
     assert d.decision == "rejected"
     assert ReasonCode.RISK_EXCEEDS_POSITION_VALUE in d.reason_codes
@@ -300,12 +311,13 @@ limits_st = st.builds(
     max_weekly_loss_pct=st.floats(min_value=0.02, max_value=0.20),
     max_drawdown_pct=st.floats(min_value=0.05, max_value=0.30),
     min_rr_ratio=st.floats(min_value=1.0, max_value=3.0),
-    max_units=st.integers(min_value=1, max_value=1000),
+    max_units=st.floats(min_value=1.0, max_value=1000.0),
+    max_margin_per_position_pct=st.floats(min_value=0.01, max_value=1.0),
 )
 
 
 @given(
-    units=st.integers(min_value=1, max_value=2000),
+    units=st.floats(min_value=0.001, max_value=2000.0, allow_nan=False),
     entry=st.floats(min_value=100.0, max_value=10000.0, allow_nan=False),
     rr=st.floats(min_value=0.0, max_value=10.0, allow_nan=False),
     risk_usd=st.floats(min_value=0.0, max_value=1000.0, allow_nan=False),
@@ -314,7 +326,7 @@ limits_st = st.builds(
 )
 @settings(max_examples=300, deadline=None)
 def test_property_no_breach_ever_approved(
-    units: int, entry: float, rr: float, risk_usd: float, equity: float, limits: RiskLimits
+    units: float, entry: float, rr: float, risk_usd: float, equity: float, limits: RiskLimits
 ) -> None:
     p = _base_proposal(units=units, entry=entry, rr=rr, risk_usd=risk_usd, sl=entry - 1.0)
     state = _base_state(equity=equity, equity_high=equity)
@@ -326,9 +338,9 @@ def test_property_no_breach_ever_approved(
         # Per-trade risk
         if p.expected_risk_usd > limits.max_risk_per_trade_pct * equity:
             raise AssertionError("approved despite per-trade risk breach")
-        # Position value
-        if units * entry > limits.max_position_value_pct * equity:
-            raise AssertionError("approved despite position value breach")
+        # Margin
+        if margin_required(units, entry) > limits.max_margin_per_position_pct * equity:
+            raise AssertionError("approved despite margin breach")
         # Max units
         if units > limits.max_units:
             raise AssertionError("approved despite max units breach")

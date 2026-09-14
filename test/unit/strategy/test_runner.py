@@ -69,7 +69,7 @@ def test_propose_emits_proposal_on_cross_in_clean_trend() -> None:
     # the type contract: each proposal is a Proposal with sensible fields.
     for p in proposals:
         assert p.expected_rr >= cfg.min_rr_ratio
-        assert p.units >= 1
+        assert p.units > 0.0
         assert p.stop_loss is not None
         assert p.take_profit is not None
         assert p.entry_price > 0

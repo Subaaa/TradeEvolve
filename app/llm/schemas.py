@@ -41,7 +41,7 @@ class ClosedTradeSummary(BaseModel):
     opened_at: datetime
     closed_at: datetime
     side: str
-    units: int
+    units: float
     entry: float
     exit: float
     pnl_usd: float

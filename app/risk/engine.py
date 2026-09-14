@@ -17,7 +17,9 @@ from datetime import datetime, timedelta, timezone
 
 from pinned.news_policy import NewsPolicy
 from pinned.risk_limits import RiskLimits
+from pinned.simulation_constants import SIM
 
+from .sizing import floor_to_lot, margin_required
 from .types import (
     AccountState,
     Decision,
@@ -143,9 +145,11 @@ def evaluate(
     if proposal.expected_risk_usd > limits.max_risk_per_trade_pct * state.equity:
         reasons.append(ReasonCode.RISK_EXCEEDS_PER_TRADE)
 
-    # 12. Position value cap
-    position_value = abs(proposal.units * proposal.entry_price)
-    if position_value > limits.max_position_value_pct * state.equity:
+    # 12. Margin cap. Notional may legitimately exceed equity under leverage;
+    #     what must stay bounded is the margin the position ties up.
+    if margin_required(proposal.units, proposal.entry_price) > (
+        limits.max_margin_per_position_pct * state.equity
+    ):
         reasons.append(ReasonCode.RISK_EXCEEDS_POSITION_VALUE)
 
     # 13. Max units
@@ -164,7 +168,16 @@ def evaluate(
     units = proposal.units
     if news_policy == NewsPolicy.REDUCE_SIZE:
         from pinned.news_policy import REDUCE_SIZE_FACTOR
-        units = max(1, int(units * REDUCE_SIZE_FACTOR))
+        # Floor to a tradeable lot; if the reduced size rounds below one lot
+        # step there is no position left to take, so drop it rather than
+        # silently rounding back up past the news-policy limit.
+        units = floor_to_lot(units * REDUCE_SIZE_FACTOR, SIM.min_lot_step)
+        if units <= 0.0:
+            return Decision(
+                decision="skipped",
+                reason_codes=[ReasonCode.RISK_EXCEEDS_POSITION_VALUE],
+                notes="news-policy size reduction leaves less than one lot step",
+            )
 
     order = OrderSpec(
         instrument=proposal.instrument,
