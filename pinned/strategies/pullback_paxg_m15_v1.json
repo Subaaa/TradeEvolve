@@ -1,0 +1,59 @@
+{
+  "version_tag": "pullback_paxg_m15_v1",
+  "instrument": "XAU_USD",
+  "granularity": "M15",
+  "description": "Long-only EMA trend + pullback resumption on closed M15 bars. Enter when price is in an uptrend, has pulled back to the fast EMA within the last few bars, and then closes above the prior bar's high. ATR stop, fixed R multiple target, bar-count time stop. BASELINE ONLY: measured at -7.5% over seven months of real PAXG/USD history (86 trades, -0.20R expectancy). It exists to exercise the journal, review and evolution machinery on paper, not because it is expected to make money. atr_sl_multiplier is 2.5 rather than 1.5 because a 1.5-ATR stop on this instrument is about 120 bps wide, below the 200 bps the round-trip fee requires, so the risk engine would refuse every trade.",
+  "params": {
+    "fast_ema_length": 9,
+    "slow_ema_length": 21,
+    "atr_length": 14,
+    "atr_percentile_window": 200,
+    "atr_percentile_max": 0.95,
+    "min_atr_bps": 12.0,
+    "pullback_lookback": 3,
+    "atr_sl_multiplier": 2.5,
+    "tp_r_multiple": 2.0,
+    "time_stop_bars": 16,
+    "time_stop_min_r": 0.5,
+    "long_only": true
+  },
+  "mutable_by_llm": [
+    "fast_ema_length",
+    "slow_ema_length",
+    "atr_length",
+    "pullback_lookback",
+    "atr_sl_multiplier",
+    "tp_r_multiple",
+    "time_stop_bars"
+  ],
+  "llm_ranges": {
+    "fast_ema_length": [
+      5,
+      20
+    ],
+    "slow_ema_length": [
+      15,
+      60
+    ],
+    "atr_length": [
+      7,
+      30
+    ],
+    "pullback_lookback": [
+      2,
+      8
+    ],
+    "atr_sl_multiplier": [
+      1.0,
+      3.0
+    ],
+    "tp_r_multiple": [
+      1.5,
+      4.0
+    ],
+    "time_stop_bars": [
+      4,
+      48
+    ]
+  }
+}

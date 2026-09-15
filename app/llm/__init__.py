@@ -1,1 +1,1 @@
-"""LLM package: the LlmClient over MiniMax-M3 (api.minimax.io)."""
+"""LLM package: a provider-agnostic client, with Claude as the default provider."""

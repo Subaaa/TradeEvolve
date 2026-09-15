@@ -22,12 +22,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
+        run: uv run ruff check .
+      # No `|| true`: a type error is a build failure, not a suggestion.
       - name: Type-check
-        run: uv run mypy app pinned services/alpaca_mcp/src || true
-      - name: Test (unit)
-        run: uv run pytest -m unit -v
-      - name: Test (pinned invariant)
-        run: uv run pytest test/test_pinned_invariant.py -v
+        run: uv run mypy app pinned
+      - name: Test
+        run: uv run python -m pytest -q

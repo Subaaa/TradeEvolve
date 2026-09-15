@@ -1,18 +1,27 @@
-"""PromotionArbiter: applies the fixed gates and writes a PromotionDecision.
+"""PromotionArbiter: applies the fixed gates and returns a decision.
 
-This module is the **only** place that may write `final_decision = 'promoted'`.
-It never reads LLM output. The gates are in `pinned/promotion_gates.py`.
+This is the only component allowed to return `PROMOTED`, and it never reads
+LLM output. It is a pure function of the phase results; the gates live in
+`pinned/promotion_gates.py`, where the LLM cannot reach them.
+
+The holdout gate the MVP used to declare is gone rather than faked: there was
+no holdout dataset and no loader, so the gate was passing a hardcoded `True`
+through and adding nothing but the appearance of rigour. Walk-forward on
+non-overlapping windows plus a bootstrap plus a live shadow is what actually
+guards this decision today.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from pinned.promotion_gates import PROMOTION_GATES, PromotionGates
-from .monte_carlo import MonteCarloResult
+
+from .bootstrap import BootstrapResult
 from .shadow import ShadowResult
-from .walk_forward import FoldResult
+from .walk_forward import FoldResult, mean_test_score, total_test_trades
 
 
 class DecisionKind(StrEnum):
@@ -30,93 +39,133 @@ class PromotionDecision:
     decided_at: datetime
     champion_score: float
     challenger_score: float
-    holdout_passed: bool
-    monte_carlo_passed: bool
-    shadow_ready: bool
+    walk_forward_passed: bool = False
+    bootstrap_passed: bool = False
+    shadow_ready: bool = False
+    shadow_beat_champion: bool = False
+    detail: str = ""
+
+    @property
+    def promoted(self) -> bool:
+        return self.decision is DecisionKind.PROMOTED
 
 
 def arbitrate(
     *,
     experiment_id: int,
     champion_wf_score: float,
-    challenger_folds: list[FoldResult],
-    challenger_holdout_score: float,
-    challenger_holdout_passes: bool,
-    monte_carlo: MonteCarloResult,
+    challenger_folds: Sequence[FoldResult],
+    bootstrap: BootstrapResult | None,
     shadow: ShadowResult | None,
+    champion_shadow: ShadowResult | None = None,
     gates: PromotionGates = PROMOTION_GATES,
     now: datetime | None = None,
 ) -> PromotionDecision:
-    """Apply the gates and return a PromotionDecision.
+    """Apply every gate in order. `PROMOTED` requires all of them to pass."""
+    moment = now or datetime.now(tz=UTC)
 
-    The decision is never `PROMOTED` unless every gate passes.
-    """
-    now = now or datetime.utcnow()
-    if not challenger_folds:
+    def decide(
+        kind: DecisionKind,
+        codes: list[str],
+        *,
+        score: float = 0.0,
+        wf: bool = False,
+        boot: bool = False,
+        ready: bool = False,
+        beat: bool = False,
+        detail: str = "",
+    ) -> PromotionDecision:
         return PromotionDecision(
             experiment_id=experiment_id,
-            decision=DecisionKind.REJECTED,
-            reason_codes=["NO_FOLDS"],
-            decided_at=now,
+            decision=kind,
+            reason_codes=codes,
+            decided_at=moment,
             champion_score=champion_wf_score,
-            challenger_score=0.0,
-            holdout_passed=False,
-            monte_carlo_passed=False,
-            shadow_ready=False,
+            challenger_score=score,
+            walk_forward_passed=wf,
+            bootstrap_passed=boot,
+            shadow_ready=ready,
+            shadow_beat_champion=beat,
+            detail=detail,
         )
 
-    challenger_score = sum(f.test_metrics.primary_score for f in challenger_folds) / len(challenger_folds)
+    if not challenger_folds:
+        return decide(DecisionKind.REJECTED, ["NO_FOLDS"], detail="no walk-forward folds ran")
 
-    # Gate 1: walk-forward relative performance
-    if champion_wf_score > 0 and challenger_score / champion_wf_score < gates.min_relative_perf:
-        return PromotionDecision(
-            experiment_id=experiment_id, decision=DecisionKind.REJECTED,
-            reason_codes=["WF_BELOW_FLOOR"], decided_at=now,
-            champion_score=champion_wf_score, challenger_score=challenger_score,
-            holdout_passed=False, monte_carlo_passed=False, shadow_ready=False,
+    challenger_score = mean_test_score(challenger_folds)
+
+    # Gate 1: enough out-of-sample trades to say anything at all.
+    trades = total_test_trades(challenger_folds)
+    if trades < gates.min_trades_walk_forward:
+        return decide(
+            DecisionKind.DEFERRED,
+            ["INSUFFICIENT_TRADES"],
+            score=challenger_score,
+            detail=f"{trades} out-of-sample trades < {gates.min_trades_walk_forward}",
         )
 
-    # Gate 2: minimum sample
-    total_trades = sum(f.test_metrics.trade_count for f in challenger_folds)
-    if total_trades < gates.min_trades_walk_forward:
-        return PromotionDecision(
-            experiment_id=experiment_id, decision=DecisionKind.DEFERRED,
-            reason_codes=["INSUFFICIENT_TRADES"], decided_at=now,
-            champion_score=champion_wf_score, challenger_score=challenger_score,
-            holdout_passed=False, monte_carlo_passed=False, shadow_ready=False,
+    # Gate 2: walk-forward relative performance.
+    if champion_wf_score > 0:
+        relative = challenger_score / champion_wf_score
+    else:
+        relative = 1.0 if challenger_score > 0 else 0.0
+    if relative < gates.min_relative_perf:
+        return decide(
+            DecisionKind.REJECTED,
+            ["WF_BELOW_FLOOR"],
+            score=challenger_score,
+            detail=f"relative performance {relative:.3f} < {gates.min_relative_perf}",
         )
 
-    # Gate 3: holdout
-    if not challenger_holdout_passes:
-        return PromotionDecision(
-            experiment_id=experiment_id, decision=DecisionKind.REJECTED,
-            reason_codes=["HOLDOUT_BELOW_FLOOR"], decided_at=now,
-            champion_score=champion_wf_score, challenger_score=challenger_score,
-            holdout_passed=False, monte_carlo_passed=False, shadow_ready=False,
+    # Gate 3: the edge must survive resampling.
+    if bootstrap is None or not bootstrap.passes:
+        p = bootstrap.p_positive if bootstrap else 0.0
+        return decide(
+            DecisionKind.REJECTED,
+            ["BOOTSTRAP_BELOW_THRESHOLD"],
+            score=challenger_score,
+            wf=True,
+            detail=f"P(profitable) {p:.3f} < {gates.bootstrap_min_p_positive}",
         )
 
-    # Gate 4: Monte Carlo
-    if not monte_carlo.passes:
-        return PromotionDecision(
-            experiment_id=experiment_id, decision=DecisionKind.REJECTED,
-            reason_codes=["MONTE_CARLO_BELOW_THRESHOLD"], decided_at=now,
-            champion_score=champion_wf_score, challenger_score=challenger_score,
-            holdout_passed=True, monte_carlo_passed=False, shadow_ready=False,
-        )
-
-    # Gate 5: shadow
+    # Gate 4: enough live shadow observation.
     if shadow is None or not shadow.ready:
-        return PromotionDecision(
-            experiment_id=experiment_id, decision=DecisionKind.DEFERRED,
-            reason_codes=["SHADOW_NOT_READY"], decided_at=now,
-            champion_score=champion_wf_score, challenger_score=challenger_score,
-            holdout_passed=True, monte_carlo_passed=True,
-            shadow_ready=False,
+        hours = shadow.hours_observed if shadow else 0.0
+        count = shadow.trades if shadow else 0
+        return decide(
+            DecisionKind.DEFERRED,
+            ["SHADOW_NOT_READY"],
+            score=challenger_score,
+            wf=True,
+            boot=True,
+            detail=(
+                f"shadow has {hours:.1f}h / {count} trades; needs "
+                f"{gates.min_shadow_hours}h / {gates.min_shadow_trades}"
+            ),
         )
 
-    return PromotionDecision(
-        experiment_id=experiment_id, decision=DecisionKind.PROMOTED,
-        reason_codes=[], decided_at=now,
-        champion_score=champion_wf_score, challenger_score=challenger_score,
-        holdout_passed=True, monte_carlo_passed=True, shadow_ready=True,
+    # Gate 5: the shadow must actually have beaten the champion live.
+    if champion_shadow is not None and shadow.expectancy_r <= champion_shadow.expectancy_r:
+        return decide(
+            DecisionKind.REJECTED,
+            ["SHADOW_BELOW_CHAMPION"],
+            score=challenger_score,
+            wf=True,
+            boot=True,
+            ready=True,
+            detail=(
+                f"shadow expectancy {shadow.expectancy_r:.3f}R did not beat champion "
+                f"{champion_shadow.expectancy_r:.3f}R"
+            ),
+        )
+
+    return decide(
+        DecisionKind.PROMOTED,
+        [],
+        score=challenger_score,
+        wf=True,
+        boot=True,
+        ready=True,
+        beat=True,
+        detail="every gate passed",
     )

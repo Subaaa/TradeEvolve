@@ -1,7 +1,11 @@
-"""APScheduler wiring.
+"""The job table.
 
-This module is intentionally small: register the jobs, start the
-scheduler. The job functions live in `app.scheduler.jobs.*`.
+The trading tick fires on the bar boundary plus a twenty-second grace, not on
+a fixed minute interval. The delay lets the broker finish publishing the bar
+that just closed; without it the tick regularly reads a bar short and skips.
+
+`max_instances=1` and `coalesce=True` on every job: a slow tick must never
+overlap the next one, and a backlog must collapse rather than replay.
 """
 from __future__ import annotations
 
@@ -11,87 +15,115 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.config import get_settings
+from app.market.bars import granularity_seconds
+from app.scheduler import deps
 from app.scheduler.jobs import (
     audit_verify,
-    challenger_pipeline,
-    daily_commentary,
-    daily_report,
-    healthcheck,
-    market_data_backfill,
-    news_fetch,
-    tick_live_loop,
-    weekly_review,
+    daily_review,
+    daily_rollover,
+    shadow_update,
+    tick_bar_close,
+    tick_monitor,
+    weekly_evolution,
 )
-
 
 logger = logging.getLogger(__name__)
 
+BAR_CLOSE_GRACE_SECONDS = 20
 
-def build_scheduler() -> BackgroundScheduler:
-    """Build and return a configured BackgroundScheduler (not yet started)."""
+
+def _bar_close_minutes(granularity: str) -> str:
+    """Cron minute expression for the close of each bar of this granularity."""
+    seconds = granularity_seconds(granularity)
+    if seconds >= 3600:
+        return "0"
+    step = max(1, seconds // 60)
+    return ",".join(str(m) for m in range(0, 60, step))
+
+
+def build_scheduler(granularity: str = "M15") -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone="UTC")
-    # Market hours: every minute during open, but the job itself checks.
+
     sched.add_job(
-        tick_live_loop.run,
-        IntervalTrigger(minutes=1, timezone="UTC"),
-        id="tick_live_loop", name="Live tick", replace_existing=True,
-        max_instances=1, coalesce=True, misfire_grace_time=30,
+        tick_bar_close.run,
+        CronTrigger(
+            minute=_bar_close_minutes(granularity),
+            second=BAR_CLOSE_GRACE_SECONDS,
+            timezone="UTC",
+        ),
+        id="tick_bar_close",
+        name="Bar-close tick",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
     )
     sched.add_job(
-        market_data_backfill.run,
-        IntervalTrigger(minutes=5, timezone="UTC"),
-        id="market_data_backfill", name="Market data backfill", replace_existing=True,
-        max_instances=1, coalesce=True, misfire_grace_time=60,
+        tick_monitor.run,
+        IntervalTrigger(seconds=60, timezone="UTC"),
+        id="tick_monitor",
+        name="Position monitor",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=30,
     )
     sched.add_job(
-        news_fetch.run,
-        IntervalTrigger(minutes=15, timezone="UTC"),
-        id="news_fetch", name="News fetch", replace_existing=True,
-        max_instances=1, coalesce=True, misfire_grace_time=60,
+        daily_rollover.run,
+        CronTrigger(hour=0, minute=0, second=5, timezone="UTC"),
+        id="daily_rollover",
+        name="Daily rollover",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
     )
     sched.add_job(
-        daily_report.run,
-        CronTrigger(hour=0, minute=5, timezone="UTC"),
-        id="daily_report", name="Daily report", replace_existing=True,
-        max_instances=1, misfire_grace_time=600,
-    )
-    sched.add_job(
-        daily_commentary.run,
+        daily_review.run,
         CronTrigger(hour=0, minute=10, timezone="UTC"),
-        id="daily_commentary", name="Daily commentary", replace_existing=True,
-        max_instances=1, misfire_grace_time=600,
+        id="daily_review",
+        name="Daily trade review",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
     )
     sched.add_job(
-        weekly_review.run,
+        shadow_update.run,
+        CronTrigger(hour=0, minute=20, timezone="UTC"),
+        id="shadow_update",
+        name="Shadow evaluation",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    sched.add_job(
+        weekly_evolution.run,
         CronTrigger(day_of_week="sun", hour=22, minute=0, timezone="UTC"),
-        id="weekly_review", name="Weekly review", replace_existing=True,
-        max_instances=1, misfire_grace_time=3600,
-    )
-    sched.add_job(
-        challenger_pipeline.run,
-        CronTrigger(day_of_week="sun", hour=22, minute=5, timezone="UTC"),
-        id="challenger_pipeline", name="Challenger pipeline", replace_existing=True,
-        max_instances=1, misfire_grace_time=3600,
+        id="weekly_evolution",
+        name="Weekly evolution",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=7200,
     )
     sched.add_job(
         audit_verify.run,
-        CronTrigger(minute=0, timezone="UTC"),
-        id="audit_verify", name="Audit verify", replace_existing=True,
-        max_instances=1, misfire_grace_time=300,
-    )
-    sched.add_job(
-        healthcheck.run,
-        IntervalTrigger(minutes=30, timezone="UTC"),
-        id="healthcheck", name="Health check", replace_existing=True,
-        max_instances=1, misfire_grace_time=60,
+        CronTrigger(minute=5, timezone="UTC"),
+        id="audit_verify",
+        name="Journal audit",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
     )
     return sched
 
 
-def start() -> BackgroundScheduler:
-    s = get_settings()
-    sched = build_scheduler()
+def start(granularity: str | None = None) -> BackgroundScheduler:
+    sched = build_scheduler(granularity or deps.settings().granularity)
     sched.start()
-    logger.info("scheduler started (env=%s)", s.app_env)
+    for job in sched.get_jobs():
+        logger.info("scheduled %s (next run: %s)", job.name, job.next_run_time)
     return sched

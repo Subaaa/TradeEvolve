@@ -1,50 +1,118 @@
-"""ChallengerBuilder: apply a candidate patch to a copy of the champion config.
+"""ChallengerBuilder: apply one bounded candidate change to the champion.
 
-This is the **only** code path that may write a new `strategy_versions` row.
-The LLM produces the candidate as a `HypothesisCandidate`; this module
-applies it to the champion's config and produces a new `StrategyConfig`
-to be written by the journal.
+Three independent checks stand between the LLM and the live config, and a
+candidate must pass all of them:
 
-Schema-validated: any field not in `MUTABLE_BY_LLM` is rejected.
+1.  **Allow-list.** The field name must be in `MUTABLE_BY_LLM`.
+2.  **Range.** The new value must be inside `LLM_RANGES`, which is narrower
+    than the pydantic bounds on purpose — a config can be valid without being
+    a change the LLM was permitted to propose.
+3.  **Optimistic concurrency.** `from_value` must match the champion's
+    current value, so a hypothesis written against a config that has since
+    been promoted away is rejected rather than silently misapplied.
+
+Pydantic then re-validates every cross-field invariant on the copy, so a
+change that would make the slow EMA shorter than the fast one fails here
+rather than at the first live tick.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
 from datetime import datetime
-from typing import Any
 
-from app.strategy.configs import MUTABLE_BY_LLM, StrategyConfig
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from app.strategy.configs import (
+    INTEGER_FIELDS,
+    LLM_RANGES,
+    MUTABLE_BY_LLM,
+    StrategyConfig,
+)
 
 
 class ChallengerError(ValueError):
-    pass
+    """A candidate that must not be applied. The message is journaled."""
 
 
-@dataclass(frozen=True)
-class HypothesisCandidate:
+class HypothesisCandidate(BaseModel):
+    """One bounded parameter change, as proposed by the weekly review."""
+
+    model_config = ConfigDict(extra="forbid")
+
     field: str
-    from_value: Any
-    to_value: Any
-    reason: str
-    proposed_at: datetime
-    weekly_review_id: int
+    from_value: float
+    to_value: float
+    reason: str = ""
+    proposed_at: datetime | None = None
+    weekly_review_id: int | None = None
 
 
-def apply_candidate(champion: StrategyConfig, candidate: HypothesisCandidate) -> StrategyConfig:
-    """Return a new StrategyConfig with the candidate field applied.
+def _coerce(field: str, value: float) -> float | int:
+    if field in INTEGER_FIELDS:
+        if not math.isclose(value, round(value), abs_tol=1e-9):
+            raise ChallengerError(
+                f"field '{field}' is an integer parameter; got {value!r}"
+            )
+        return round(value)
+    return float(value)
 
-    Raises ChallengerError if the field is not in the LLM-mutable allow-list.
-    """
+
+def validate_candidate(
+    champion: StrategyConfig, candidate: HypothesisCandidate
+) -> float | int:
+    """Check the candidate and return the coerced target value."""
     if candidate.field not in MUTABLE_BY_LLM:
         raise ChallengerError(
             f"field '{candidate.field}' is not in the LLM-mutable allow-list"
         )
-    current = getattr(champion, candidate.field, None)
-    if current != candidate.from_value:
+
+    low, high = LLM_RANGES[candidate.field]
+    if not (low <= candidate.to_value <= high):
         raise ChallengerError(
-            f"champion's current value for '{candidate.field}' ({current!r}) "
-            f"does not match candidate's from_value ({candidate.from_value!r})"
+            f"to_value {candidate.to_value!r} for '{candidate.field}' is outside "
+            f"the allowed range [{low}, {high}]"
         )
-    new = champion.model_copy(update={candidate.field: candidate.to_value})
-    # Pydantic re-validates invariants on copy
-    return new
+
+    current = getattr(champion, candidate.field)
+    if not math.isclose(float(current), float(candidate.from_value), rel_tol=1e-9, abs_tol=1e-9):
+        raise ChallengerError(
+            f"champion's current value for '{candidate.field}' ({current!r}) does not "
+            f"match the candidate's from_value ({candidate.from_value!r})"
+        )
+
+    target = _coerce(candidate.field, candidate.to_value)
+    if math.isclose(float(target), float(current), rel_tol=1e-9, abs_tol=1e-9):
+        raise ChallengerError(
+            f"candidate for '{candidate.field}' does not change anything"
+        )
+    return target
+
+
+def apply_candidate(
+    champion: StrategyConfig,
+    candidate: HypothesisCandidate,
+    *,
+    version_tag: str | None = None,
+) -> StrategyConfig:
+    """Return a new StrategyConfig with the candidate applied."""
+    target = validate_candidate(champion, candidate)
+    tag = version_tag or next_version_tag(champion, candidate)
+    # Re-validate from a plain dict rather than `model_copy`: a copy skips
+    # validation, so an invariant-breaking change (a slow EMA shorter than the
+    # fast one) would survive to the first live tick.
+    try:
+        return StrategyConfig.model_validate(
+            champion.model_dump() | {candidate.field: target, "version_tag": tag}
+        )
+    except ValidationError as exc:
+        raise ChallengerError(
+            f"applying '{candidate.field}' = {target!r} violates a config invariant: {exc}"
+        ) from exc
+
+
+def next_version_tag(champion: StrategyConfig, candidate: HypothesisCandidate) -> str:
+    """A readable, unique-enough tag describing what changed."""
+    base = champion.version_tag.split("__", 1)[0]
+    value = _coerce(candidate.field, candidate.to_value)
+    short = "".join(part[0] for part in candidate.field.split("_"))
+    return f"{base}__{short}{value}"

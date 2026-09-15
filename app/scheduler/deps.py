@@ -1,51 +1,66 @@
-"""Lazily-constructed, process-lifetime shared dependencies for scheduler jobs.
+"""Shared, lazily-built dependencies for scheduled jobs.
 
-Jobs are plain no-argument `run()` functions APScheduler calls directly
-(`app/scheduler/cron.py`), so dependencies can't be constructor-injected;
-the (synchronous, connection-pooled) DB engines and stores are built once
-here instead, mirroring the `get_settings()` cached-singleton pattern in
-`app/config.py`.
-
-`McpClientPool` is deliberately *not* cached here: each job wraps its
-async body in its own `asyncio.run(...)` call (a fresh event loop every
-time), and the pool's stdio streams/tasks are bound to whichever loop
-created them -- reusing one across separate `asyncio.run()` calls hangs
-`asyncio.run()`'s own shutdown waiting on tasks tied to an abandoned
-loop. Construct a fresh `McpClientPool()` per job invocation and
-`await pool.close()` it before returning (see `market_data_backfill.py`
-/ `tick_live_loop.py`), matching the pattern already used in
-`app/cli.py`'s `broker-ping` command.
+One process, one database connection, one broker client, one session id. The
+previous version deliberately refused to cache the broker client and spawned a
+fresh subprocess for every tick — 182 process launches in two and a half
+hours, about 2.5 seconds of startup latency on every trading decision. There
+is no subprocess now, so there is nothing to amortise: the client is a plain
+HTTP session held open for the life of the process.
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
+import uuid
 from functools import lru_cache
 
-from sqlalchemy.engine import Engine
-
-from app.config import get_settings
-from app.db.candle_store import SupabaseCandleStore
-from app.db.client import make_admin_engine, make_journal_engine
-from app.db.journal_store import SupabaseJournalStore
+from app.broker.alpaca import AlpacaClient, build_client
+from app.config import Settings, get_settings
+from app.db.journal_store import SqliteJournalStore
+from app.db.sqlite import open_db
+from app.execution.position_manager import PositionManager
 from app.journal.writer import JournalWriter
 
+logger = logging.getLogger(__name__)
 
-@lru_cache(maxsize=1)
-def get_admin_engine() -> Engine:
-    return make_admin_engine(get_settings().supabase_db_url)
-
-
-@lru_cache(maxsize=1)
-def get_journal_engine() -> Engine:
-    return make_journal_engine(get_settings().supabase_journal_db_url)
+SESSION_ID: str = str(uuid.uuid4())
 
 
 @lru_cache(maxsize=1)
-def get_candle_store() -> SupabaseCandleStore:
-    s = get_settings()
-    return SupabaseCandleStore(get_admin_engine(), s.instrument, s.granularity)
+def settings() -> Settings:
+    return get_settings()
 
 
 @lru_cache(maxsize=1)
-def get_journal_writer() -> JournalWriter:
-    store = SupabaseJournalStore(get_admin_engine(), get_journal_engine())
-    return JournalWriter(store)
+def db() -> sqlite3.Connection:
+    s = settings()
+    logger.info("opening database at %s", s.db_path)
+    return open_db(s.db_path)
+
+
+@lru_cache(maxsize=1)
+def broker() -> AlpacaClient:
+    return build_client(settings())
+
+
+@lru_cache(maxsize=1)
+def journal() -> JournalWriter:
+    return JournalWriter(SqliteJournalStore(db()), session_id=SESSION_ID)
+
+
+@lru_cache(maxsize=1)
+def position_manager() -> PositionManager:
+    s = settings()
+    return PositionManager(
+        broker=broker(),
+        conn=db(),
+        journal=journal(),
+        instrument=s.instrument,
+        granularity=s.granularity,
+    )
+
+
+def reset() -> None:
+    """Drop every cached dependency. Tests and shutdown only."""
+    for f in (settings, db, broker, journal, position_manager):
+        f.cache_clear()

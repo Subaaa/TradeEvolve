@@ -37,9 +37,13 @@ Thumbs.db
 test/.artifacts/
 *.log
 
+# The live database and its WAL. Downloaded candles and recorded trades are
+# machine-local state, not source; rebuild with `cli download-bars`.
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/backups/
+
 # Data caches (real only — fixtures are committed)
 data/candles/*.parquet
 data/holdout/*.parquet
-
-# Supabase CLI local state (project ref, pooler URL)
-supabase/.temp/

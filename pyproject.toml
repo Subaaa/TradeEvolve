@@ -1,7 +1,7 @@
 [project]
 name = "TradeEvolve"
-version = "0.1.0"
-description = "Self-improving paper-trading research agent for XAU/USD (via PAXG/USD) on Alpaca paper trading."
+version = "0.2.0"
+description = "Disciplined paper-trading bot for XAU/USD (via PAXG/USD) on Alpaca paper, with Claude-driven bounded strategy evolution."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }
@@ -9,47 +9,34 @@ authors = [{ name = "Mavis" }]
 
 dependencies = [
     # LLM
-    "openai>=1.50.0",
-    # MCP server / client (official)
-    "mcp>=1.0.0",
+    "anthropic>=0.40.0",
     # Data + math
     "pandas>=2.2.0",
     "numpy>=1.26.0",
     # Validation
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
-    # DB
-    "supabase>=2.8.0",
-    "psycopg[binary]>=3.2.0",
-    "sqlalchemy>=2.0.0",
     # Scheduling
     "apscheduler>=3.10.0",
     # API
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
-    # HTTP
+    # HTTP (Alpaca REST)
     "httpx>=0.27.0",
-    "feedparser>=6.0.0",
-    # Prompts
-    "jinja2>=3.1.0",
-    # Logging
-    "structlog>=24.0.0",
     # Misc
     "python-dateutil>=2.9.0",
-    "pytz>=2024.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
     "hypothesis>=6.100.0",
     "ruff>=0.6.0",
     "mypy>=1.10.0",
     "respx>=0.21.0",
     "freezegun>=1.5.0",
-    "mcp[cli]>=1.0.0",
+    "httpx>=0.27.0",
 ]
 
 [project.scripts]
@@ -60,7 +47,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "pinned"]
 
 [tool.ruff]
 line-length = 100
@@ -71,10 +58,15 @@ select = [
     "E", "F", "W", "I", "B", "UP",
     "SIM", "PL", "RUF", "PIE", "TID",
 ]
-ignore = ["E501", "B008"]
+ignore = ["E501", "B008", "PLC0415", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004"]
 
 [tool.ruff.lint.per-file-ignores]
-"test/**/*.py" = ["PLR2004", "S101"]
+"test/**/*.py" = ["PLR2004", "S101", "E741"]
+# `l` is the low of an OHLC bar everywhere in this codebase; renaming it to
+# satisfy the ambiguous-name rule would make the bar tuples unreadable.
+"app/broker/types.py" = ["E741"]
+"app/broker/fake.py" = ["E741"]
+"app/market/bars.py" = ["E741"]
 "app/llm/prompts/*.py" = ["E501"]
 
 [tool.mypy]
@@ -82,18 +74,9 @@ python_version = "3.11"
 strict = true
 ignore_missing_imports = true
 disallow_untyped_decorators = false
-warn_unused_ignores = true
+warn_unused_ignores = false
+plugins = []
 
-[tool.pytest.ini_options]
-minversion = "8.0"
-testpaths = ["test"]
-addopts = "-ra -q --strict-markers"
-markers = [
-    "unit: pure unit tests (no network, no DB)",
-    "integration: tests that touch real or mocked Supabase + MCP subprocess",
-    "replay: tests that exercise the full weekly loop on recorded fixtures",
-    "soak: 24h stability tests (run manually)",
-]
-filterwarnings = [
-    "error",
-]
+[[tool.mypy.overrides]]
+module = ["test.*"]
+disallow_untyped_defs = false

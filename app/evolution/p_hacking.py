@@ -7,7 +7,6 @@ directive, the next hypothesis is auto-rejected.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
 from pinned.promotion_gates import PROMOTION_GATES, PromotionGates
 
@@ -32,10 +31,7 @@ def update(
     If the candidate failed, increment. If we just crossed the
     threshold, mark the plateau.
     """
-    if candidate_failed:
-        attempts = current_attempts + 1
-    else:
-        attempts = 0
+    attempts = current_attempts + 1 if candidate_failed else 0
     is_plateau = attempts >= gates.max_hypothesis_attempts_per_champion
     return PlateauState(
         champion_id=champion_id,

@@ -1,88 +1,178 @@
-"""Strategy config + runner tests."""
+"""The strategy rule and its two safety properties."""
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
-import numpy as np
 import pandas as pd
 import pytest
 
-from app.strategy.configs import MUTABLE_BY_LLM, StrategyConfig
-from app.strategy.runner import propose
+from app.execution.tags import make_tag
+from app.risk.types import Side
+from app.strategy.configs import StrategyConfig
+from app.strategy.runner import propose, required_bars
+from test.conftest import flat_series, pullback_series
+
+pytestmark = pytest.mark.unit
+
+EQUITY = 10_000.0
 
 
-def test_load_baseline_config(tmp_path: Path) -> None:
-    src = Path("pinned/strategies/ema_atr_xauusd_h1_v1.json")
-    cfg = StrategyConfig.from_json_file(src)
-    assert cfg.version_tag == "ema_atr_xauusd_h1_v1"
-    assert cfg.instrument == "XAU_USD"
-    assert cfg.granularity == "H1"
-    assert cfg.fast_ema_length == 20
-    assert cfg.slow_ema_length == 50
+def run(df: pd.DataFrame, config: StrategyConfig, *, version: int = 1) -> list:
+    return propose(df, config, equity=EQUITY, strategy_version_id=version)
 
 
-def test_canonical_hash_stable() -> None:
-    src = Path("pinned/strategies/ema_atr_xauusd_h1_v1.json")
-    c1 = StrategyConfig.from_json_file(src)
-    c2 = StrategyConfig.from_json_file(src)
-    assert c1.canonical_hash() == c2.canonical_hash()
+def test_the_pullback_setup_produces_exactly_one_proposal(config: StrategyConfig) -> None:
+    proposals = run(pullback_series(), config)
+    assert len(proposals) == 1
+    p = proposals[0]
+    assert p.side is Side.LONG
+    assert p.stop_loss is not None and p.stop_loss < p.entry_price
+    assert p.take_profit is not None and p.take_profit > p.entry_price
+    assert p.expected_rr == pytest.approx(config.tp_r_multiple)
+    assert p.units > 0
 
 
-def test_slow_must_be_slower_than_fast() -> None:
-    with pytest.raises(Exception):
-        StrategyConfig(
-            version_tag="bad", instrument="XAU_USD", granularity="H1",
-            fast_ema_length=50, slow_ema_length=20,
-            atr_length=14, atr_percentile_window=200, atr_percentile_max=0.95,
-            atr_sl_multiplier=1.5, atr_tp_multiplier=3.0,
-            min_rr_ratio=1.5, time_stop_hours=72, time_stop_min_r=0.5,
+def test_a_flat_market_produces_nothing(config: StrategyConfig) -> None:
+    assert run(flat_series(400), config) == []
+
+
+def test_too_little_history_produces_nothing(config: StrategyConfig) -> None:
+    short = pullback_series().iloc[-(required_bars(config) - 1) :]
+    assert run(short, config) == []
+
+
+def test_the_signal_never_fires_on_a_bar_that_is_not_the_trigger(
+    config: StrategyConfig,
+) -> None:
+    """Dropping the resumption bar must remove the signal.
+
+    This is the repainting guard from the other side: if the rule still fired
+    without its trigger bar, the caller's forming-bar handling would not
+    matter.
+    """
+    df = pullback_series()
+    assert len(run(df, config)) == 1
+    assert run(df.iloc[:-1], config) == []
+
+
+def test_the_strategy_is_long_only(config: StrategyConfig) -> None:
+    """Invert the series: a downtrend must produce no short, and no trade."""
+    df = pullback_series()
+    inverted = df.copy()
+    pivot = float(df["c"].iloc[0]) * 2
+    inverted["o"] = pivot - df["o"]
+    inverted["c"] = pivot - df["c"]
+    inverted["h"] = pivot - df["l"]
+    inverted["l"] = pivot - df["h"]
+    for p in run(inverted, config):
+        assert p.side is Side.LONG
+
+
+def test_the_tag_is_stable_across_repeated_evaluation(config: StrategyConfig) -> None:
+    """The same bar must always produce the same client_order_id.
+
+    This is what makes the broker's duplicate rejection a real guard; the old
+    tag mixed in live equity and a per-process session id, so it changed on
+    every tick and deduplicated nothing.
+    """
+    df = pullback_series()
+    first = propose(df, config, equity=EQUITY, strategy_version_id=7)[0]
+    # Different equity, same bar: the tag must not move.
+    second = propose(df, config, equity=EQUITY * 3.5, strategy_version_id=7)[0]
+    assert first.client_tag == second.client_tag
+    assert first.client_tag == make_tag(
+        strategy_version_id=7, side=Side.LONG, bar_ts=first.bar_ts
+    )
+
+
+def test_a_different_version_gets_a_different_tag(config: StrategyConfig) -> None:
+    df = pullback_series()
+    a = propose(df, config, equity=EQUITY, strategy_version_id=1)[0]
+    b = propose(df, config, equity=EQUITY, strategy_version_id=2)[0]
+    assert a.client_tag != b.client_tag
+
+
+def test_a_too_quiet_market_is_refused() -> None:
+    """A market that cannot pay the round-trip fee is not traded.
+
+    The fixture's ATR is about 196 bps of price, so a floor above that must
+    refuse the setup even though every other clause of the rule is satisfied.
+    """
+    quiet = StrategyConfig(version_tag="quiet", min_atr_bps=99.0)
+    assert run(pullback_series(base=4_000.0), quiet) == []
+    # Same series, a floor the market clears: the setup is taken.
+    permissive = StrategyConfig(version_tag="loud", min_atr_bps=99.0)
+    assert len(run(pullback_series(base=400.0), permissive)) == 1
+
+
+def test_the_indicator_snapshot_is_recorded(config: StrategyConfig) -> None:
+    """The journal needs the 'why', not just the 'what'."""
+    p = run(pullback_series(), config)[0]
+    for key in ("ema_fast", "ema_slow", "atr", "close", "prior_high", "sl_distance"):
+        assert key in p.indicators
+    assert p.indicators["ema_fast"] > p.indicators["ema_slow"]
+
+
+def test_the_stop_distance_matches_the_atr_multiple(config: StrategyConfig) -> None:
+    p = run(pullback_series(), config)[0]
+    expected = config.atr_sl_multiplier * p.indicators["atr"]
+    assert p.entry_price - p.stop_loss == pytest.approx(expected)
+
+
+def test_an_empty_frame_is_handled(config: StrategyConfig) -> None:
+    empty = pd.DataFrame(
+        {c: pd.Series(dtype="float64") for c in ("o", "h", "l", "c", "v")},
+        index=pd.DatetimeIndex([], tz="UTC"),
+    )
+    assert run(empty, config) == []
+
+
+def test_bar_timestamp_is_utc(config: StrategyConfig) -> None:
+    p = run(pullback_series(), config)[0]
+    assert p.bar_ts.tzinfo is not None
+    assert p.bar_ts.utcoffset() == timedelta(0)
+    assert isinstance(p.bar_ts, datetime)
+    assert p.bar_ts.tzinfo is UTC or p.bar_ts.utcoffset() == timedelta(0)
+
+
+def test_required_bars_covers_every_window(config: StrategyConfig) -> None:
+    needed = required_bars(config)
+    assert needed > config.atr_percentile_window
+    assert needed > config.slow_ema_length
+
+
+
+def test_the_prefix_path_and_the_whole_series_path_agree(
+    config: StrategyConfig,
+) -> None:
+    """The backtester's shortcut must be a shortcut, not a different rule.
+
+    `propose()` computes indicators over the window it is handed; the
+    backtester computes them once over the full series and evaluates each bar.
+    Those give identical results only because every indicator here is
+    backward-looking, so this test pins that rather than assuming it.
+    """
+    from app.strategy.runner import compute_indicators, evaluate_bar
+
+    df = pullback_series()
+    whole = compute_indicators(df, config)
+
+    for i in range(len(df) - 12, len(df)):
+        prefix = df.iloc[: i + 1]
+        from_prefix = propose(
+            prefix, config, equity=EQUITY, strategy_version_id=3
+        )
+        from_whole = evaluate_bar(
+            df, whole, i, config, equity=EQUITY, strategy_version_id=3
         )
 
-
-def test_mutable_set_includes_baseline_params() -> None:
-    expected = {"fast_ema_length", "slow_ema_length", "atr_length",
-                "atr_sl_multiplier", "atr_tp_multiplier", "time_stop_hours"}
-    assert expected.issubset(MUTABLE_BY_LLM)
-
-
-def _make_trending_candles(n: int = 300, slope: float = 0.5, noise: float = 1.0) -> pd.DataFrame:
-    rng = np.random.default_rng(0)
-    idx = pd.date_range("2024-01-01", periods=n, freq="h", tz="UTC")
-    closes = 2000.0 + np.arange(n) * slope + rng.normal(scale=noise, size=n).cumsum() * 0.0
-    # Make a clean trend:
-    closes = 2000.0 + np.arange(n) * slope
-    highs = closes + 1.0
-    lows = closes - 1.0
-    opens = closes - 0.2
-    return pd.DataFrame({"o": opens, "h": highs, "l": lows, "c": closes, "v": 0}, index=idx)
-
-
-def test_propose_emits_proposal_on_cross_in_clean_trend() -> None:
-    cfg = StrategyConfig.from_json_file(Path("pinned/strategies/ema_atr_xauusd_h1_v1.json"))
-    candles = _make_trending_candles(300, slope=1.0)
-    proposals = propose(
-        candles, candles.iloc[-1], cfg, equity=10_000.0, strategy_version_id=1, session_id="s",
-    )
-    # The exact set of crosses depends on the synthetic series; we only assert
-    # the type contract: each proposal is a Proposal with sensible fields.
-    for p in proposals:
-        assert p.expected_rr >= cfg.min_rr_ratio
-        assert p.units > 0.0
-        assert p.stop_loss is not None
-        assert p.take_profit is not None
-        assert p.entry_price > 0
-
-
-def test_propose_no_proposal_in_pure_noise() -> None:
-    cfg = StrategyConfig.from_json_file(Path("pinned/strategies/ema_atr_xauusd_h1_v1.json"))
-    rng = np.random.default_rng(1)
-    idx = pd.date_range("2024-01-01", periods=300, freq="h", tz="UTC")
-    closes = 2000.0 + rng.normal(scale=0.5, size=300).cumsum()
-    candles = pd.DataFrame({
-        "o": closes - 0.2, "h": closes + 1, "l": closes - 1, "c": closes, "v": 0,
-    }, index=idx)
-    proposals = propose(candles, candles.iloc[-1], cfg, equity=10_000.0, strategy_version_id=1, session_id="s")
-    # Pure noise should not produce a sustained cross; allow at most 0–1 proposals.
-    assert len(proposals) <= 5
+        if from_prefix:
+            assert from_whole is not None
+            assert from_whole.client_tag == from_prefix[0].client_tag
+            assert from_whole.entry_price == pytest.approx(from_prefix[0].entry_price)
+            assert from_whole.stop_loss == pytest.approx(from_prefix[0].stop_loss)
+            assert from_whole.units == pytest.approx(from_prefix[0].units)
+            for key, value in from_prefix[0].indicators.items():
+                assert from_whole.indicators[key] == pytest.approx(value)
+        else:
+            assert from_whole is None

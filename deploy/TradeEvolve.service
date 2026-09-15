@@ -20,7 +20,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/TradeEvolve/data/backups
+# The whole data directory: the SQLite file and its WAL live here, as do
+# backups written by `cli backup`.
+ReadWritePaths=/opt/TradeEvolve/data
 
 [Install]
 WantedBy=multi-user.target

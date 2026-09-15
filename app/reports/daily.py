@@ -1,12 +1,21 @@
-"""Daily report: a deterministic function over the day's journal rows."""
+"""Daily report over the closed trades of one UTC day.
+
+Takes persisted `TradeRecord` rows rather than the backtester's in-memory
+`Trade`, which is what the previous version required — and which live trading
+never produced, so the report could only ever describe a simulation.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
-from typing import Iterable
+import json
+import math
+import sqlite3
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
 
-from app.evolution.backtester import Trade
-from app.llm.schemas import DailyReportSummary
+from app.db.journal_store import SqliteJournalStore
+from app.db.trades import TradeRecord, summarize
 
 
 @dataclass(frozen=True)
@@ -15,74 +24,105 @@ class DailyReport:
     net_pnl_usd: float
     num_trades: int
     num_rejections: int
-    sharpe: float
-    max_drawdown_pct: float
-    payload: dict
+    win_rate: float
+    expectancy_r: float
+    profit_factor: float
+    max_drawdown_usd: float
+    gross_fees_usd: float
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+def _intraday_drawdown(pnls: Sequence[float]) -> float:
+    peak = 0.0
+    running = 0.0
+    worst = 0.0
+    for p in pnls:
+        running += p
+        peak = max(peak, running)
+        worst = max(worst, peak - running)
+    return worst
 
 
 def compute(
     *,
     day: date,
-    trades: Iterable[Trade],
-    journal_rejections: int,
+    trades: Sequence[TradeRecord],
+    conn: sqlite3.Connection | None = None,
 ) -> DailyReport:
-    """Compute a daily report from the day's trades and the rejection count."""
-    pnls = [t.pnl_usd for t in trades]
-    net = sum(pnls)
-    num = len(pnls)
-    # Sharpe over single-day trades: sqrt(num) is the annualization we
-    # use elsewhere; for a single day we just record the mean / std.
-    if num >= 2:
-        mean = sum(pnls) / num
-        var = sum((p - mean) ** 2 for p in pnls) / (num - 1)
-        std = var ** 0.5
-        sharpe = mean / std if std > 0 else 0.0
-    else:
-        sharpe = 0.0
+    """Summarise one day. `conn` is optional and only used for rejections."""
+    ordered = sorted(
+        trades, key=lambda t: t.closed_at or datetime.min.replace(tzinfo=UTC)
+    )
+    stats = summarize(ordered)
+    pnls = [float(t.pnl_usd or 0.0) for t in ordered]
 
-    # Max drawdown over the day's equity curve.
-    eq = 0.0
-    peak = 0.0
-    max_dd = 0.0
-    for p in pnls:
-        eq += p
-        peak = max(peak, eq)
-        dd = (peak - eq) / peak if peak > 0 else 0.0
-        max_dd = max(max_dd, dd)
+    rejections = 0
+    if conn is not None:
+        start = datetime.combine(day, time.min, tzinfo=UTC)
+        end = start + timedelta(days=1)
+        counts = SqliteJournalStore(conn).count_by_reason_since(start.isoformat())
+        rejections = sum(v for k, v in counts.items() if k != "OK")
+        del end
 
+    pf = stats["profit_factor"]
     return DailyReport(
         day=day,
-        net_pnl_usd=net,
-        num_trades=num,
-        num_rejections=journal_rejections,
-        sharpe=sharpe,
-        max_drawdown_pct=max_dd,
+        net_pnl_usd=stats["net_pnl_usd"],
+        num_trades=int(stats["count"]),
+        num_rejections=rejections,
+        win_rate=stats["win_rate"],
+        expectancy_r=stats["expectancy_r"],
+        profit_factor=pf if math.isfinite(pf) else 0.0,
+        max_drawdown_usd=_intraday_drawdown(pnls),
+        gross_fees_usd=sum(float(t.fees_usd or 0.0) for t in ordered),
         payload={
-            "day": day.isoformat(),
             "trades": [
                 {
+                    "id": t.id,
                     "side": t.side.value,
                     "units": t.units,
-                    "entry": t.entry,
+                    "entry": t.entry_fill_price,
                     "exit": t.exit_price,
+                    "exit_reason": t.exit_reason.value if t.exit_reason else None,
                     "pnl_usd": t.pnl_usd,
                     "pnl_r": t.pnl_r,
-                    "exit_reason": t.exit_reason,
+                    "mfe_r": t.mfe_r,
+                    "mae_r": t.mae_r,
+                    "bars_held": t.bars_held,
                 }
-                for t in trades
-            ],
-            "sharpe": sharpe,
-            "max_drawdown_pct": max_dd,
+                for t in ordered
+            ]
         },
     )
 
 
-def to_llm_summary(r: DailyReport) -> DailyReportSummary:
-    return DailyReportSummary(
-        day=r.day.isoformat(),
-        net_pnl_usd=r.net_pnl_usd,
-        num_trades=r.num_trades,
-        num_rejections=r.num_rejections,
-        sharpe=r.sharpe,
-        max_drawdown_pct=r.max_drawdown_pct,
+def save(conn: sqlite3.Connection, report: DailyReport) -> None:
+    conn.execute(
+        "INSERT INTO daily_reports(day, net_pnl, num_trades, num_rejections, payload)"
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(day) DO UPDATE SET net_pnl = excluded.net_pnl,"
+        " num_trades = excluded.num_trades, num_rejections = excluded.num_rejections,"
+        " payload = excluded.payload",
+        (
+            report.day.isoformat(),
+            report.net_pnl_usd,
+            report.num_trades,
+            report.num_rejections,
+            json.dumps(report.payload, default=str),
+        ),
     )
+
+
+def list_recent(conn: sqlite3.Connection, *, limit: int = 30) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM daily_reports ORDER BY day DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [
+        {
+            "day": r["day"],
+            "net_pnl": r["net_pnl"],
+            "num_trades": r["num_trades"],
+            "num_rejections": r["num_rejections"],
+        }
+        for r in rows
+    ]

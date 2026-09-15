@@ -1,116 +1,85 @@
 # Architecture
 
-This document is the full architecture for the TradeEvolve
-agent. It is the canonical reference for "why is it this way". The
-implementation plan in `plan.md` and the `AGENTS.md` operating manual
-are the in-flight references.
+One Python process. No subprocess, no Postgres, no message broker, no worker
+pool, no frontend.
 
-## Goals and non-goals
+```
+                  ┌──────────────── one process ────────────────┐
+   Alpaca paper ──┤  APScheduler ── tick_bar_close (on the bar)  │
+   (HTTPS)        │              ── tick_monitor   (every 60s)   │
+                  │              ── daily_rollover / review      │
+                  │              ── weekly_evolution / shadow    │
+                  │              ── audit_verify                 │
+                  │  FastAPI (read-only, 127.0.0.1:8080)         │
+                  │  SQLite (WAL) ── candles, trades, journal,   │
+                  │                  strategy_versions, ...      │
+                  └─────────────────────────────────────────────┘
+                                     │
+                            Anthropic API (daily + weekly only)
+```
 
-The agent is a self-improving, **paper-trading** research tool for
-**XAU/USD** (traded as **PAXG/USD** on Alpaca paper trading). The MVP is a single
-asset, a single timeframe, one explainable baseline strategy, one
-champion + one challenger, paper trading only, no leverage, daily
-review, weekly evolution, one bounded mutation per week.
+## The two loops
 
-The MVP does **not** include live trading, a frontend, multi-asset,
-sub-hour timeframes, leverage, or any backtest UI. The "Definition of
-Done" in `plan.md` Section 30 is the source of truth for what the MVP
-is and is not.
+**The bar-close tick** fires at `:00/:15/:30/:45` plus twenty seconds. It
+fetches bars from the broker, drops the forming bar, evaluates the rule on the
+last closed bar, runs the risk engine, and — if approved — enters and protects
+the position. It is guarded twice against acting on a bar twice: a
+`last_processed_bar_ts` marker, and an idempotency tag that is a pure function
+of (version, side, bar), which the broker itself deduplicates.
 
-## Topology
+**The monitor** runs every sixty seconds regardless of the bar clock, because
+an exit must not wait for a bar to close. It detects stop fills, takes profit,
+applies the time stop and the hard lifetime cap, flattens on the kill switch,
+re-places a stop that has gone missing, and market-sells as a failsafe if price
+trades through an unfilled stop twice in a row.
 
-A single VPS runs one Python process under `systemd` (or one Docker
-container). The process holds:
+## Why the discipline counters are a query
 
-- the **APScheduler** in-process cron (all jobs in `app/scheduler/jobs/`)
-- the **FastAPI** read-only JSON API on `127.0.0.1:8080`
-- the Alpaca **MCP subprocess** driver (the subprocess holds the Alpaca
-  API key/secret; the parent never sees them)
-- the deterministic **StrategyRunner** and **RiskEngine**
-- the in-process **Backtester**
-- the append-only **Journal** writer
+Every gate in `app/risk/engine.py` compares against a field on `AccountState`,
+and `AccountState` is rebuilt from the `trades` table on every tick. This is
+deliberate. The previous design incremented these counters in memory and, in
+practice, never updated them at all — so the daily-loss limit, the weekly-loss
+limit and the consecutive-loss cooldown were all unreachable code while
+appearing to be enforced. Deriving them means a crash, a restart or a second
+process all see the same numbers.
 
-The process connects over TLS to **Supabase Postgres** for state. Two
-DB roles are used: a service role for reads and non-journal writes,
-and a `journal_writer` role for `INSERT`-only on the journal tables.
+## Why a position is never unprotected
 
-There is no Redis, no separate worker containers, no event streaming,
-no vector database, no frontend, no microservices.
+`PositionManager.open` places a `stop_limit` immediately after the entry fills.
+If that placement fails, the position is market-sold on the spot rather than
+left for the next cycle. Alpaca crypto has no plain `stop` order type, so the
+protective order is a `stop_limit` whose limit sits 50 bps below the trigger —
+wide enough that a fast move still fills. `reconcile_on_boot` closes the loop
+after a restart: it adopts a position it has a record of (re-placing the stop
+if needed), closes a database row whose position is gone, and flattens an
+orphan position it cannot account for.
 
-## The LLM is a researcher
+## The evolution loop
 
-The `LlmClient` is constructed with only the `minimax_api_key`. It has
-no access to Alpaca credentials, DB URLs, or any other secret. The LLM is
-called in five places, each with a strict Pydantic input and output
-schema:
+Once a week: build stats from the trades table, Claude proposes at most one
+bounded parameter change, three independent layers validate it (the output
+schema's field enum, the challenger builder's allow-list and range check, and
+the config's own validators), walk-forward against the champion on 90 days,
+bootstrap resampling, then stage as a shadow. Once a day the arbiter asks
+whether the shadow has earned promotion. Only `promote()` can change the
+champion, and it does so in one transaction guarded by a partial unique index.
 
-1. `classify_news` — when a new high-impact news item arrives.
-2. `review_trade` — when a trade closes.
-3. `daily_commentary` — at 00:10 UTC daily.
-4. `weekly_review` — at 22:00 UTC on Sunday.
-5. `reflect_failure_pattern` — when the Reviewer surfaces a recurring
-   pattern.
-
-There is **no LLM call in the trading loop**. The `StrategyRunner`
-and `RiskEngine` are pure Python functions of their inputs.
-
-## The `pinned/` invariant
-
-`pinned/` is the set of files the LLM cannot modify. A build-time
-test (`test_pinned_invariant.py`) fails the build if any non-`pinned/`
-module imports a non-allow-listed symbol from `pinned/`. The
-`LIVE_TRADING_ENABLED` constant in `pinned/simulation_constants.py` is
-`False`; the Alpaca MCP subprocess refuses to connect to anything but a
-paper-trading base URL.
-
-## The four-phase promotion loop
-
-A candidate challenger must pass four phases before it can be
-auto-promoted to champion:
-
-1. **Walk-forward validation** — N folds of training/test splits.
-2. **Holdout** — single run on the frozen holdout dataset (whose hash
-   is pinned; the LLM never sees the dataset).
-3. **Monte Carlo** — 1,000 random order reshuffles; the candidate's
-   actual PnL must be in the 80th percentile of the distribution.
-4. **Shadow paper-trading** — the candidate runs in parallel with the
-   champion for at least 240 hours and 30 trades; its shadow metrics
-   must beat the champion's live metrics over the same window.
-
-Each phase writes a journal entry. The `PromotionArbiter` is the only
-code path that may write `final_decision = 'promoted'`. It is a pure
-function of the phase results; it never reads LLM output.
+Two gates in the previous version were incapable of ever firing: the Monte
+Carlo compared the sum of a shuffled list to the sum of the original (always
+equal), and the shadow measured elapsed hours from the last candle rather than
+from the start. Both have regression tests naming the old bug.
 
 ## Failure handling
 
-See `plan.md` Section 22 for the full table. The key invariants:
-
-- The journal hash chain is verified hourly; a mismatch writes a
-  `system_event` and an alert.
-- The kill switch is a row in `system_state`; the live loop checks
-  it every tick.
-- Duplicate orders are prevented by `client_tag`, passed as Alpaca's
-  `client_order_id`; Alpaca rejects re-submission of the same id.
-
-## The Alpaca MCP server
-
-Lives in `services/alpaca_mcp/`. Built on the official `mcp` Python
-SDK v2.x. Seven tools: five read-only, two write (gated by
-`ALPACA_MCP_WRITE_ENABLED`, and by `AlpacaClient` refusing to connect to
-a non-paper base URL). The subprocess holds the Alpaca API key/secret;
-the parent process communicates over stdio.
-
-## Why this is enough to be worth building
-
-- The LLM is rate-limited, schema-validated, and cannot bypass the
-  risk engine.
-- The risk engine applies unchanged to every strategy. The LLM can
-  propose a strategy change; the risk engine then validates the
-  resulting trade. The PromotionArbiter explicitly checks for
-  risk-engine circumvention.
-- The holdout is hash-pinned and never shown to the LLM.
-- All decisions are journaled. Every non-action (rejection, skip,
-  no-signal) is a row.
-- The system is honest about its limitations: it is a research tool,
-  not a product.
+| Failure | Behaviour |
+|---|---|
+| A job raises | Caught and logged; the scheduler thread survives. |
+| Stop placement fails | Position flattened immediately, risk event journaled. |
+| Stop goes missing | Re-placed within one monitor cycle, up to three attempts, else flattened. |
+| Price through an unfilled stop | Market sell after two consecutive sightings. |
+| Process dies with a position | Adopted and re-protected at boot, or flattened if unaccountable. |
+| Broker holds an unknown position | Flattened, journaled as an orphan. |
+| Daily loss or loss count breached | Kill switch until the next UTC day. |
+| Weekly loss or drawdown breached | Kill switch, manual CLI clear only. |
+| Journal hash chain broken | Hourly audit writes a system event. |
+| LLM unavailable | The day's review or the week's hypothesis is skipped; trading is unaffected. |
