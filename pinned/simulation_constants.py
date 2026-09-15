@@ -7,7 +7,6 @@ pinned configuration.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import time
 from typing import Final
 
 
@@ -41,9 +40,13 @@ class SimulationConstants:
     # Alpaca does NOT offer leverage on crypto (PAXG is non-marginable).
     leverage: float = 1.0
 
-    # --- Sessions (gold spot weekly boundaries, applied to the PAXG proxy) ---
-    friday_flatten_time_utc: time = time(20, 55)
-    sunday_open_time_utc: time = time(22, 0)
+    # Session boundaries live in `pinned/risk_limits.py` as
+    # `no_entries_on_weekend` / `weekend_start_*` / `weekend_end_*`, enforced
+    # by `app.risk.engine.is_weekend`. That is the only weekend rule: it
+    # blocks new entries and nothing else. There used to be a second,
+    # unused pair of weekend constants here and a matching force-flatten
+    # rule in the backtester that the live `PositionManager` never
+    # implemented — a backtest/live mismatch, removed rather than kept.
 
 
 SIM = SimulationConstants()

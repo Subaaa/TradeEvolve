@@ -418,9 +418,15 @@ def run(bt: BacktestInput, gates: PromotionGates | None = None) -> BacktestOutpu
                 raw_exit = closes[i]
                 exit_reason = ExitReason.HARD_TIME_CAP
 
-            if exit_reason is None and is_weekend(bar_ts, bt.risk_limits):
-                raw_exit = closes[i]
-                exit_reason = ExitReason.WEEKEND
+            # No weekend force-flatten: `PositionManager.monitor` (the live
+            # code this backtester exists to predict) has no such rule — it
+            # only blocks NEW entries on the weekend via `is_weekend` below,
+            # same as it does here. A backtest that closes positions the live
+            # bot would have kept open is not simulating the live bot; this
+            # was found and fixed after it silently ate 30-40% of H4 trades
+            # in a manual diagnostic (49h weekend window vs. a 48h H4 time
+            # stop) while only costing ~3% of M15 trades, so the effect was
+            # easy to miss until a longer timeframe was tried.
 
             if exit_reason is not None and raw_exit is not None:
                 fill = _sell_price(raw_exit, bt.slippage_bps)
